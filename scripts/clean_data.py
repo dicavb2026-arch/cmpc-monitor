@@ -1,8 +1,14 @@
 import pandas as pd
 import numpy as np
+import os
+
+# Crear carpeta de salida si no existe
+os.makedirs("data", exist_ok=True)
 
 def limpiar_predios():
-    df = pd.read_csv("data/predios_cmpc_rows (2).csv", sep=",", encoding="utf-8", on_bad_lines="skip")
+    # Buscar archivo en raíz o en data/
+    path = "predios_cmpc_rows (2).csv" if os.path.exists("predios_cmpc_rows (2).csv") else "data/predios_cmpc_rows (2).csv"
+    df = pd.read_csv(path, sep=",", encoding="utf-8", on_bad_lines="skip")
     df.columns = df.columns.str.strip()
     for col in ["latitud", "longitud", "hectareas"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -12,7 +18,8 @@ def limpiar_predios():
     print(f"✅ Predios listos: {len(df)}")
 
 def limpiar_inteligencia():
-    df = pd.read_csv("data/inteligencia_tactica_rows (4).csv", sep=",", encoding="utf-8", on_bad_lines="skip")
+    path = "inteligencia_tactica_rows (4).csv" if os.path.exists("inteligencia_tactica_rows (4).csv") else "data/inteligencia_tactica_rows (4).csv"
+    df = pd.read_csv(path, sep=",", encoding="utf-8", on_bad_lines="skip")
     df.columns = df.columns.str.strip()
     df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
     df.dropna(subset=["fecha"], inplace=True)
