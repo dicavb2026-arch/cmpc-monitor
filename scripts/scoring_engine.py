@@ -1,65 +1,79 @@
 import pandas as pd
 import numpy as np
-from scipy.spatial.distance import cdist
+import os
+import math
 
-# 1. Cargar datos limpios
-predios = pd.read_csv("data/predios_limpios.csv")
-intel = pd.read_csv("data/inteligencia_limpiada.csv")
+# Función matemática para calcular distancia (sin librerías externas pesadas)
+def calcular_distancia_km(lat1, lon1, lat2, lon2):
+    R = 6371.0  # Radio de la Tierra en km
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
-# 2. Forzar conversión de fechas a datetime (evita el error de str vs Timestamp)
-intel["fecha"] = pd.to_datetime(intel["fecha"], errors="coerce", utc=True)
-intel = intel.dropna(subset=["fecha"])
-intel = intel.dropna(subset=["latitud", "longitud"])
+# 1. Crear carpeta de salida si no existe
+os.makedirs("data", exist_ok=True)
 
-# 3. Calcular decaimiento temporal
-hoy = pd.Timestamp.now(tz="UTC")
-diff_days = (hoy - intel["fecha"]).dt.days
-intel["peso_tiempo"] = np.where(diff_days <= 7, 1.0,
-                     np.where(diff_days <= 30, 0.6,
-                     np.where(diff_days <= 90, 0.3, 0.1)))
+# 2. Cargar datos limpios (generados por clean_data.py)
+try:
+    predios = pd.read_csv("data/predios_limpios.csv")
+    intel = pd.read_csv("data/inteligencia_limpiada.csv")
+except:
+    print("⚠️ Advertencia: Archivos CSV no encontrados. Esperando primera ejecución limpia.")
+    predios = pd.DataFrame()
+    intel = pd.DataFrame()
 
-# 4. Preparar coordenadas
-if "latitud" not in predios.columns or "longitud" not in predios.columns:
-    print("❌ Error: Los predios no tienen columnas latitud/longitud válidas.")
-    exit()
+if not predios.empty and not intel.empty:
+    # 3. Preparar fechas
+    hoy = pd.Timestamp.today()
+    diff_days = (hoy - intel["fecha"]).dt.days
+    intel["peso_tiempo"] = np.where(diff_days <= 7, 1.0,
+                         np.where(diff_days <= 30, 0.6,
+                         np.where(diff_days <= 90, 0.3, 0.1)))
 
-predios_coords = predios[["latitud", "longitud"]].values
-intel_coords = intel[["latitud", "longitud"]].values
+    # 4. Calcular distancias manualmente (Loop)
+    resultados = []
+    mapeo_nivel = {"CRÍTICO": 0.4, "ALTO": 0.3, "MEDIO": 0.2, "BAJO": 0.1}
 
-if len(intel_coords) == 0:
-    print("⚠️ No hay eventos con coordenadas válidas. Generando tabla base.")
-    pd.DataFrame({"predio": predios["nombre_predio"], "comuna": predios["comuna"], "score": 0, "nivel": "BAJO"}).to_csv("data/estado_predios.csv", index=False)
-    exit()
+    for _, p in predios.iterrows():
+        lat_p, lon_p = p.get("latitud"), p.get("longitud")
+        if pd.isna(lat_p) or pd.isna(lon_p): continue
 
-distancias = cdist(predios_coords, intel_coords) * 111  # km aproximados
+        score = 0.0
+        nivel = "BAJO"
 
-# 5. Calcular scoring por predio
-resultados = []
-mapeo_nivel = {"CRÍTICO": 0.4, "ALTO": 0.3, "MEDIO": 0.2, "BAJO": 0.1}
+        # Filtrar eventos cercanos (menor a 20km)
+        eventos_cercanos = intel.apply(
+            lambda row: calcular_distancia_km(lat_p, lon_p, row["latitud"], row["longitud"]) if not pd.isna(row.get("latitud")) else 9999, 
+            axis=1
+        )
+        indices_cercanos = eventos_cercanos[eventos_cercanos < 20].index
+        proximos = intel.loc[indices_cercanos]
 
-for i, (_, p) in enumerate(predios.iterrows()):
-    d = distancias[i]
-    proximos = intel[d < 20]  # Buffer de 20km
+        if len(proximos) > 0:
+            pesos_base = proximos["nivel_alerta"].map(mapeo_nivel).fillna(0.1)
+            score = (pesos_base * proximos["peso_tiempo"]).sum() * 100
+            score = min(score, 100.0)
 
-    if len(proximos) == 0:
-        score, nivel = 0.0, "BAJO"
-    else:
-        pesos_base = proximos["nivel_alerta"].map(mapeo_nivel).fillna(0.1)
-        score = (pesos_base * proximos["peso_tiempo"]).sum() * 100
-        score = min(score, 100.0)
+            if score >= 75: nivel = "CRÍTICO"
+            elif score >= 50: nivel = "ALTO"
+            elif score >= 25: nivel = "MEDIO"
+            else: nivel = "BAJO"
 
-        if score >= 75: nivel = "CRÍTICO"
-        elif score >= 50: nivel = "ALTO"
-        elif score >= 25: nivel = "MEDIO"
-        else: nivel = "BAJO"
+        resultados.append({
+            "predio": p.get("nombre_predio", f"Predio_Sin_Nombre"),
+            "comuna": p.get("comuna", "Desconocida"),
+            "score": round(score, 1),
+            "nivel": nivel
+        })
 
-    resultados.append({
-        "predio": p.get("nombre_predio", f"Predio_{i}"),
-        "comuna": p.get("comuna", "Desconocida"),
-        "score": round(score, 1),
-        "nivel": nivel
-    })
-
-df_resultado = pd.DataFrame(resultados)
-df_resultado.to_csv("data/estado_predios.csv", index=False)
-print(f"✅ Scoring completado exitosamente para {len(df_resultado)} predios.")
+    df_resultado = pd.DataFrame(resultados)
+    df_resultado.to_csv("data/estado_predios.csv", index=False)
+    print(f"✅ Scoring completado exitosamente para {len(df_resultado)} predios.")
+else:
+    # Si no hay datos, crear un CSV vacío para que Streamlit no falle
+    pd.DataFrame(columns=["predio", "comuna", "score", "nivel"]).to_csv("data/estado_predios.csv", index=False)
+    print("⚠️ Datos vacíos, creando archivo base.")
