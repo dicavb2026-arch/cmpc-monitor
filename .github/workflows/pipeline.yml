@@ -1,8 +1,9 @@
 name: 🔄 Actualización CMPC
 on:
   schedule:
-    - cron: '0 */4 * * *'  # Cada 4 horas
+    - cron: '0 */4 * * *'
   workflow_dispatch:
+permissions: { contents: write }
 jobs:
   run:
     runs-on: ubuntu-latest
